@@ -1,0 +1,17 @@
+Package: BayesianDisaggregation
+Title: Bayesian Methods for Economic Data Disaggregation
+Version: 0.1.0
+Depends: R (>= 4.1.0)
+Authors@R: person("José Mauricio", "Gómez Julián", email = "isadore.nabi@pm.me", role = c("aut", "cre"))
+Description: Implements Bayesian methods for disaggregating economic data with various posterior estimation techniques and comprehensive evaluation metrics.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Imports: readxl, dplyr, tidyr, stringr, foreach, doParallel, openxlsx,
+        rlang, tibble, magrittr
+Suggests: testthat, knitr, rmarkdown, microbenchmark
+RoxygenNote: 7.3.3
+VignetteBuilder: knitr
+NeedsCompilation: no
+Packaged: 2025-09-19 14:40:05 UTC; ROG
+Author: José Mauricio Gómez Julián [aut, cre]
+Maintainer: José Mauricio Gómez Julián <isadore.nabi@pm.me>
