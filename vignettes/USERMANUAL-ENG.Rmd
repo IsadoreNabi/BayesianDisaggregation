@@ -1,0 +1,478 @@
+---
+title: "Sensitivity Analysis Framework for Bayesian Economic Disaggregation"
+author: "José Mauricio Gómez Julián"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Sensitivity Analysis Framework}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+ > **How to read this manual.**  
+> Sections 1–3 develop the **theory** (with equations); Sections 4–6 give **diagnostics** and **metrics**; Sections 7–8 provide **reproducible code**: a fast synthetic demo (evaluates on knit) and a full **real-data pipeline** (disabled by default for speed, enable by setting `eval=TRUE`). All code is consistent with the functions exported by the `BayesianDisaggregation` package.
+
+```{r setup, include=TRUE}
+# Global chunk defaults
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 9, fig.height = 6
+)
+
+# Libraries
+suppressPackageStartupMessages({
+  library(BayesianDisaggregation)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(readr)
+  library(openxlsx)
+})
+
+# Logging verbosity from the package
+log_enable("INFO")
+set.seed(2024)
+```
+
+# 1. Problem Setup
+
+We observe an **aggregate index** (e.g., CPI) by period $t=1,\dots,T$, and we want a **sectoral disaggregation** into $K$ components whose period-wise shares lie on the **unit simplex**:
+
+$$
+W_t = (w_{t1},\dots,w_{tK}),\qquad w_{tk}\ge 0,\quad \sum_{k=1}^K w_{tk}=1.
+$$
+
+We start with a **prior weight matrix** $P\in\mathbb{R}^{T\times K}$ (rows on the simplex), and construct a **likelihood of sectors** $L\in\Delta^{K-1}$ (a non-negative vector summing to one). A **temporal profile** then spreads $L$ to $LT\in\mathbb{R}^{T\times K}$. Finally, a **deterministic update rule** combines $P$ and $LT$ to obtain the posterior $W$.
+
+# 2. Constructing the Sectoral Likelihood $L$
+
+## 2.1 PCA/SVD of the centered prior matrix
+
+Let $P$ be validated (finite, non-negative, rows $\approx 1$; small deviations renormalized). We **center** columns over time:
+
+$$
+X = P - \mathbf{1}\,\bar p^\top,\quad \bar p = \frac{1}{T}\sum_{t=1}^T P_{t\cdot}.
+$$
+
+Compute the SVD $X = U\Sigma V^\top$. Let $v$ denote the **first right singular vector** (PC1 loadings). We map to non-negative salience via absolute values and normalize:
+
+$$
+\ell_k = |v_k|,\qquad L_k = \frac{\ell_k}{\sum_j \ell_j}.
+$$
+
+If PC1 is **degenerate** (near-zero variance or identical columns), we fall back to **column means** of $P$ (renormalized). This is implemented in:
+
+```{r L_from_P, include=TRUE}
+# Example call (internals are in the package):
+# L <- compute_L_from_P(P) 
+```
+
+**Diagnostics attached to `L`:** attributes `"pc1_loadings"`, `"explained_var"`, and `"fallback"`.
+
+## 2.2 Temporal spreading of $L$
+
+We create a time-varying matrix $LT$ by applying a non-negative weight profile $w_t$ and row-renormalizing:
+
+$$
+LT_{t,k} \propto w_t L_k,\qquad \sum_k LT_{t,k}=1.
+$$
+
+Built-in **patterns**:
+
+* `constant`: $w_t=1$
+* `recent`: linearly increasing in $t$ (more weight to recent periods)
+* `linear`: affine ramp between endpoints
+* `bell`: symmetric Gaussian-like bump around $T/2$
+
+```{r spread-L, include=TRUE}
+# Example call:
+# LT <- spread_likelihood(L, T_periods = nrow(P), pattern = "recent")
+```
+
+# 3. Posterior Updating Rules (Deterministic, MCMC-free)
+
+Given $P$ and $LT$ (both row-wise on the simplex), we define four deterministic updates:
+
+* **Weighted average** (mixing parameter $\lambda\in[0,1]$):
+
+$$
+W = \mathsf{norm}_1\{\lambda P + (1-\lambda)LT\}.
+$$
+
+* **Multiplicative** (elementwise product with re-normalization):
+
+$$
+W = \mathsf{norm}_1\{P\odot LT\}.
+$$
+
+* **Dirichlet mean** (analytical conjugacy, $\gamma>0$, smaller $\gamma\Rightarrow$ sharper):
+
+$$
+\alpha_{\text{post}} = \frac{P}{\gamma} + \frac{LT}{\gamma},\qquad
+W = \frac{\alpha_{\text{post}}}{\mathbf{1}^\top\alpha_{\text{post}}}.
+$$
+
+* **Adaptive** (sector-wise mixing by prior volatility):
+
+$$
+\phi_k=\min\!\Big(\frac{\sigma_k}{\bar\sigma},\,0.8\Big),\quad
+W_{t\cdot}=\mathsf{norm}_1\{(1-\phi)\odot P_{t\cdot} + \phi\odot LT_{t\cdot}\}.
+$$
+
+All are exposed in the package:
+
+```{r posteriors, include=TRUE}
+# posterior_weighted(P, LT, lambda = 0.7)
+# posterior_multiplicative(P, LT)
+# posterior_dirichlet(P, LT, gamma = 0.1)
+# posterior_adaptive(P, LT)
+```
+
+# 4. Coherence, Stability, and Interpretability
+
+## 4.1 Coherence with respect to $L$
+
+Define prior/posterior **temporal means**:
+
+$$
+\bar p = \frac{1}{T}\sum_t P_{t\cdot},\qquad \bar w = \frac{1}{T}\sum_t W_{t\cdot}.
+$$
+
+Let $\rho(\cdot,\cdot)$ be a **robust correlation** (max of |Pearson| and |Spearman|). The **coherence** scales the **increment** $\Delta\rho=\max(0,\rho(\bar w,L)-\rho(\bar p,L))$:
+
+$$
+\text{coherence}=\min\{1,\ \text{const} + \text{mult}\cdot\Delta\rho\}.
+$$
+
+## 4.2 Numerical and temporal stability
+
+* **Numerical stability (exponential penalty)** on row-sum deviation and negatives:
+
+$$
+S_{\text{num}}=\exp\{-a\cdot\overline{|\sum_k W_{tk}-1|} - b\cdot \#(W<0)\}.
+$$
+
+* **Temporal stability** via average $|\Delta|$ (lower variation $\Rightarrow$ higher score):
+
+$$
+S_{\text{tmp}} = \frac{1}{1+\kappa\cdot \overline{|\Delta W|}},\quad
+\overline{|\Delta W|}=\frac{1}{K}\sum_k \frac{1}{T-1}\sum_{t}|W_{t+1,k}-W_{t,k}|.
+$$
+
+* **Composite stability** (default weights 60% numeric, 40% temporal):
+
+$$
+S_{\text{comp}} = 0.6\,S_{\text{num}} + 0.4\,S_{\text{tmp}}.
+$$
+
+The package functions:
+
+```{r metrics-fns, include=TRUE}
+# coherence_score(P, W, L, mult = 3.0, const = 0.5)
+# numerical_stability_exp(W, a = 1000, b = 10)
+# temporal_stability(W, kappa = 50)
+# stability_composite(W, a = 1000, b = 10, kappa = 50)
+```
+
+## 4.3 Interpretability
+
+Two principles:
+
+1. **Preservation** of the sectoral structure (correlation between $\bar p$ and $\bar w$);
+2. **Plausibility** of average sector changes (penalize extreme relative shifts).
+
+Implementation:
+
+$$
+\text{pres}=\max\{0,\rho(\bar p,\bar w)\},\qquad
+r_k=\frac{|\,\bar w_k-\bar p_k\,|}{\bar p_k+\epsilon},\quad
+\text{plaus}= \frac{1}{1+2\cdot Q_{0.9}(r_k)}.
+$$
+
+Then $\text{interp}=0.6\,\text{pres}+0.4\,\text{plaus}$.
+
+```{r interp-fn, include=TRUE}
+# interpretability_score(P, W, use_q90 = TRUE)
+```
+
+# 5. End-to-End API (`bayesian_disaggregate`)
+
+The convenience pipeline:
+
+1. `read_cpi()` and `read_weights_matrix()` (Excel)
+2. `compute_L_from_P(P)` and `spread_likelihood(L, T, pattern)`
+3. posterior rule (`weighted` / `multiplicative` / `dirichlet` / `adaptive`)
+4. metrics: coherence, stability (composite), interpretability, efficiency (heuristic), composite score
+5. export helpers: `save_results()` and a one-file workbook for “best” config
+
+```{r api, include=TRUE}
+# Example signature (see Section 8 for real data):
+# bayesian_disaggregate(path_cpi, path_weights,
+#   method = c("weighted","multiplicative","dirichlet","adaptive"),
+#   lambda = 0.7, gamma = 0.1,
+#   coh_mult = 3.0, coh_const = 0.5,
+#   stab_a = 1000, stab_b = 10, stab_kappa = 50,
+#   likelihood_pattern = "recent")
+```
+
+# 6. Interpreting Key Visualizations
+
+* **Heatmap of posterior $W$**: each **cell** is a sector share in a year; **rows** are years, **columns** are sectors.
+  *Read it as*: darker tiles = larger sector share; **horizontal smoothness** indicates temporal stability; **vertical patterns** (bands) show persistent sectoral importance.
+
+* **Top-sectors lines**: for the most relevant sectors by average share, **lines** track the sector’s share over time. *Read it as*: consistent levels = stability; trend changes coincide with macro structure shifts.
+
+* **Sectoral CPI sheet**: $\hat Y_{t,k} = \text{CPI}_t \times W_{t,k}$.
+  *Read it as*: dollarized (or index-scaled) decomposition of the aggregate.
+
+# 7. Reproducible Synthetic Demo (evaluates on knit)
+
+This chunk synthesizes a small example you can knit safely.
+
+```{r demo, include=TRUE}
+# Synthetic prior matrix (rows on simplex)
+T <- 10; K <- 6
+set.seed(123)
+P <- matrix(rexp(T*K), nrow = T)
+P <- P / rowSums(P)
+
+# Likelihood vector from P (PCA/SVD; robust with fallback)
+L  <- compute_L_from_P(P)
+
+# Spread over time with "recent" pattern
+LT <- spread_likelihood(L, T_periods = T, pattern = "recent")
+
+# Try a couple of posteriors
+W_weighted <- posterior_weighted(P, LT, lambda = 0.7)
+W_adaptive <- posterior_adaptive(P, LT)
+
+# Metrics for adaptive
+coh  <- coherence_score(P, W_adaptive, L)
+stab <- stability_composite(W_adaptive, a = 1000, b = 10, kappa = 50)
+intr <- interpretability_score(P, W_adaptive)
+eff  <- 0.65
+comp <- 0.30*coh + 0.25*stab + 0.25*intr + 0.20*eff
+
+data.frame(coherence = coh, stability = stab, interpretability = intr,
+           efficiency = eff, composite = comp) %>% round(4)
+```
+
+# 8. Full Real-Data Pipeline (disable/enable evaluation)
+
+> **Switch to `eval=TRUE` after setting your paths**. By default we keep this chunk off to render quickly on any machine.
+
+```{r real-pipeline, eval=FALSE}
+# === Create synthetic data for CRAN-compliant demo ===
+demo_dir <- tempdir()
+
+# Create synthetic CPI data (mimicking your structure)
+set.seed(123)
+cpi_demo <- data.frame(
+  Year = 2000:2010,
+  CPI = cumsum(c(100, rnorm(10, 0.5, 2)))  # Random walk starting at 100
+)
+cpi_file <- file.path(demo_dir, "synthetic_cpi.xlsx")
+openxlsx::write.xlsx(cpi_demo, cpi_file)
+
+# Create synthetic weights matrix (mimicking VAB weights structure)
+set.seed(456)
+years <- 2000:2010
+sectors <- c("Agriculture", "Manufacturing", "Services", "Construction", "Mining")
+
+weights_demo <- data.frame(Year = years)
+for(sector in sectors) {
+  weights_demo[[sector]] <- runif(length(years), 0.05, 0.35)
+}
+# Normalize rows to sum to 1 (simplex constraint)
+weights_demo[, -1] <- weights_demo[, -1] / rowSums(weights_demo[, -1])
+weights_file <- file.path(demo_dir, "synthetic_weights.xlsx")
+openxlsx::write.xlsx(weights_demo, weights_file)
+
+# Use synthetic data paths
+path_cpi <- cpi_file
+path_w <- weights_file
+out_dir <- demo_dir
+
+cat("Using synthetic data for CRAN demo:\n")
+cat("CPI file:", path_cpi, "\n")
+cat("Weights file:", path_w, "\n")
+cat("Output directory:", out_dir, "\n")
+
+# --- Base run (robust defaults) ---
+base_res <- bayesian_disaggregate(
+  path_cpi           = path_cpi,
+  path_weights       = path_w,
+  method             = "adaptive",
+  lambda             = 0.7,   # recorded in metrics; not used by "adaptive"
+  gamma              = 0.1,
+  coh_mult           = 3.0,
+  coh_const          = 0.5,
+  stab_a             = 1000,
+  stab_b             = 10,
+  stab_kappa         = 60,
+  likelihood_pattern = "recent"
+)
+xlsx_base <- save_results(base_res, out_dir = file.path(out_dir, "base"))
+print(base_res$metrics)
+
+# --- Minimal grid search for demo (reduced size) ---
+n_cores <- 1  # Use single core for CRAN compliance
+grid_df <- expand.grid(
+  method             = c("weighted", "adaptive"),  # Reduced methods
+  lambda             = c(0.5, 0.7),               # Reduced options
+  gamma              = 0.1,                       # Single option
+  coh_mult           = 3.0,                       # Single option  
+  coh_const          = 0.5,                       # Single option
+  stab_a             = 1000,
+  stab_b             = 10,
+  stab_kappa         = 60,                        # Single option
+  likelihood_pattern = "recent",                  # Single option
+  KEEP.OUT.ATTRS     = FALSE,
+  stringsAsFactors   = FALSE
+)
+
+grid_res <- run_grid_search(
+  path_cpi     = path_cpi,
+  path_weights = path_w,
+  grid_df      = grid_df,
+  n_cores      = n_cores
+)
+write.csv(grid_res, file.path(out_dir, "grid_results.csv"), row.names = FALSE)
+
+best_row <- grid_res %>% arrange(desc(composite)) %>% slice(1)
+print("Best configuration from grid search:")
+print(best_row)
+
+# --- Re-run the best configuration for clean export ---
+best_res <- bayesian_disaggregate(
+  path_cpi           = path_cpi,
+  path_weights       = path_w,
+  method             = best_row$method,
+  lambda             = if (!is.na(best_row$lambda)) best_row$lambda else 0.7,
+  gamma              = if (!is.na(best_row$gamma))  best_row$gamma  else 0.1,
+  coh_mult           = best_row$coh_mult,
+  coh_const          = best_row$coh_const,
+  stab_a             = best_row$stab_a,
+  stab_b             = best_row$stab_b,
+  stab_kappa         = best_row$stab_kappa,
+  likelihood_pattern = best_row$likelihood_pattern
+)
+xlsx_best <- save_results(best_res, out_dir = file.path(out_dir, "best"))
+
+# --- One Excel with everything (including hyperparameters) ---
+sector_summary <- tibble(
+  Sector          = colnames(best_res$posterior)[-1],
+  prior_mean      = colMeans(as.matrix(best_res$prior[, -1])),
+  posterior_mean  = colMeans(as.matrix(best_res$posterior[, -1]))
+)
+
+wb <- createWorkbook()
+addWorksheet(wb, "Hyperparameters"); writeData(wb, "Hyperparameters", best_row)
+addWorksheet(wb, "Metrics");         writeData(wb, "Metrics", best_res$metrics)
+addWorksheet(wb, "Prior_P");         writeData(wb, "Prior_P", best_res$prior)
+addWorksheet(wb, "Posterior_W");     writeData(wb, "Posterior_W", best_res$posterior)
+addWorksheet(wb, "Likelihood_t");    writeData(wb, "Likelihood_t", best_res$likelihood_t)
+addWorksheet(wb, "Likelihood_L");    writeData(wb, "Likelihood_L", best_res$likelihood)
+addWorksheet(wb, "Sector_Summary");  writeData(wb, "Sector_Summary", sector_summary)
+
+for (sh in c("Hyperparameters","Metrics","Prior_P","Posterior_W",
+             "Likelihood_t","Likelihood_L","Sector_Summary")) {
+  freezePane(wb, sh, firstRow = TRUE)
+  addFilter(wb, sh, rows = 1, cols = 1:ncol(readWorkbook(wb, sh)))
+  setColWidths(wb, sh, cols = 1:200, widths = "auto")
+}
+
+# --- Add sectoral CPI (aggregate times posterior weights) ---
+W_post <- best_res$posterior           # Year + sectors
+cpi_df <- read_cpi(path_cpi)           # Year, CPI
+sector_cpi <- dplyr::left_join(W_post, cpi_df, by = "Year") %>%
+  dplyr::mutate(dplyr::across(-c(Year, CPI), ~ .x * CPI))
+
+# Quality check: sector sums vs CPI
+check_sum <- sector_cpi %>%
+  dplyr::mutate(row_sum = rowSums(dplyr::across(-c(Year, CPI))),
+                diff    = CPI - row_sum)
+cat("Quality check (first 5 rows):\n")
+print(head(check_sum, 5))
+
+addWorksheet(wb, "Sector_CPI")
+writeData(wb, "Sector_CPI", sector_cpi)
+freezePane(wb, "Sector_CPI", firstRow = TRUE)
+addFilter(wb, "Sector_CPI", rows = 1, cols = 1:ncol(sector_cpi))
+setColWidths(wb, "Sector_CPI", cols = 1:200, widths = "auto")
+
+excel_onefile <- file.path(out_dir, "best", "Best_Full_Output_withSectorCPI.xlsx")
+saveWorkbook(wb, excel_onefile, overwrite = TRUE)
+cat("Full results saved to:", excel_onefile, "\n")
+
+# --- Quick plots (saved as PNGs) ---
+dir_plots <- file.path(out_dir, "best", "plots")
+if (!dir.exists(dir_plots)) dir.create(dir_plots, recursive = TRUE)
+
+W_long <- best_res$posterior %>%
+  pivot_longer(-Year, names_to = "Sector", values_to = "Weight")
+p_heat <- ggplot(W_long, aes(Year, Sector, fill = Weight)) +
+  geom_tile() + scale_fill_viridis_c() +
+  labs(title = "Posterior weights (W): heatmap", x = "Year", y = "Sector", fill = "Share") +
+  theme_minimal(base_size = 11) + theme(axis.text.y = element_text(size = 6))
+ggsave(file.path(dir_plots, "posterior_heatmap.png"), p_heat, width = 12, height = 9, dpi = 220)
+
+top_sectors <- best_res$posterior %>%
+  summarise(across(-Year, mean)) %>%
+  pivot_longer(everything(), names_to = "Sector", values_to = "MeanShare") %>%
+  arrange(desc(MeanShare)) %>% slice(1:3) %>% pull(Sector)  # Reduced to top 3 for demo
+
+p_lines <- best_res$posterior %>%
+  select(Year, all_of(top_sectors)) %>%
+  pivot_longer(-Year, names_to = "Sector", values_to = "Weight") %>%
+  ggplot(aes(Year, Weight, color = Sector)) +
+  geom_line(linewidth = 0.9) +
+  labs(title = "Top 3 sectors by average share (posterior W)", y = "Share", x = "Year") +
+  theme_minimal(base_size = 11)
+ggsave(file.path(dir_plots, "posterior_topSectors.png"), p_lines, width = 11, height = 6, dpi = 220)
+
+cat("Demo completed successfully. All files written to temporary directory.\n")
+```
+
+# 9. Practical Guidance and Defaults
+
+* Prefer `method="adaptive"` when prior sector volatilities are heterogeneous; otherwise `weighted` with $\lambda\in[0.7,0.9]$ is strong and often tops the grid.
+* The default **coherence** parameters `(mult=3.0, const=0.5)` produce a bounded, interpretable 0–1 score that emphasizes **improvement** over the prior.
+* The **exponential** numerical penalty is intentionally sharp: it keeps row-sum deviations and negatives at bay in automated runs and grid searches.
+* For reports, export **Sector\_CPI** to illustrate the economic decomposition $\hat Y_{t,k}$.
+
+# Appendix A. Invariants and Quick Checks
+
+```{r invariants, include=TRUE}
+# Example: invariants on a fresh synthetic run
+T <- 6; K <- 5
+set.seed(7)
+P <- matrix(rexp(T*K), nrow = T); P <- P / rowSums(P)
+L <- compute_L_from_P(P)
+LT <- spread_likelihood(L, T, "recent")
+W  <- posterior_multiplicative(P, LT)
+
+# Invariants
+stopifnot(all(abs(rowSums(P)  - 1) < 1e-12))
+stopifnot(all(abs(rowSums(LT) - 1) < 1e-12))
+stopifnot(all(abs(rowSums(W)  - 1) < 1e-12))
+c(
+  coherence = coherence_score(P, W, L),
+  stability = stability_composite(W),
+  interpret = interpretability_score(P, W)
+) %>% round(4)
+```
+
+# Appendix B. Session Info
+
+```{r session, include=TRUE}
+sessionInfo()
+```
+
+**Notes**
+
+- The *real-data* chunk is set to `eval=FALSE` so the manual renders anywhere. Flip it to `TRUE` on your machine to run fully against your Excel files.
+
+- The “best one-file” export includes **Hyperparameters, Metrics, Prior_P, Posterior_W, Likelihood_t, Likelihood_L, Sector_Summary, Sector_CPI**, with frozen headers and filters for quick analysis.
+
+- Plots are written to `.../best/plots/` and match the interpretation guidance in Section 6.

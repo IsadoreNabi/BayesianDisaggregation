@@ -1,0 +1,24 @@
+Package: BayesianDisaggregation
+Title: Bayesian Methods for Economic Data Disaggregation
+Version: 0.1.2
+Depends: R (>= 4.1.0)
+Authors@R: person("José Mauricio", "Gómez Julián", email = "isadore.nabi@pm.me", role = c("aut", "cre"))
+Description: Implements a novel Bayesian disaggregation framework that combines 
+    Principal Component Analysis (PCA) and Singular Value Decomposition (SVD) 
+    dimension reduction of prior weight matrices with deterministic Bayesian 
+    updating rules. The method provides Markov Chain Monte Carlo (MCMC) free 
+    posterior estimation with built-in diagnostic metrics. While based on 
+    established PCA (Jolliffe, 2002) <doi:10.1007/b98835> and Bayesian principles 
+    (Gelman et al., 2013) <doi:10.1201/b16018>, the specific integration for 
+    economic disaggregation represents an original methodological contribution.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Imports: readxl, dplyr, tidyr, stringr, foreach, doParallel, openxlsx,
+        rlang, tibble, magrittr
+Suggests: knitr, rmarkdown, ggplot2, readr, testthat (>= 3.0.0)
+RoxygenNote: 7.3.3
+VignetteBuilder: knitr
+NeedsCompilation: no
+Packaged: 2025-10-09 15:47:09 UTC; ROG
+Author: José Mauricio Gómez Julián [aut, cre]
+Maintainer: José Mauricio Gómez Julián <isadore.nabi@pm.me>
