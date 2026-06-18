@@ -1,0 +1,137 @@
+---
+title: "Evidence-based Bayesian disaggregation"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Evidence-based Bayesian disaggregation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+## What this package does
+
+Given an observed **aggregate** price index $\mathrm{cpi}_t$ and a matrix of
+(known) sectoral aggregation weights $W_{t,k}$ — value-added (VAB) shares — the
+goal is to recover the $K$ latent **sectoral** price indices $\varphi_{t,k}$ that
+the aggregate is made of. The sectoral indices then feed a downstream nested
+Ornstein–Uhlenbeck model (`bayesianOU`) as the market price $\varphi$.
+
+The disaggregation is genuinely Bayesian: the aggregate enters as **evidence**
+(an observation density), and the sectoral indices come out as a **posterior**
+with credible intervals, not as a single deterministic re-weighting.
+
+## Why "evidence-based": the F1–F6 history
+
+The 0.1.x family advertised "MCMC-free Bayesian disaggregation", but the
+aggregate CPI never entered the computation (F1): the "posterior" was derived
+from the prior weight matrix alone, the Dirichlet concentration cancelled on
+renormalization (F2), the temporal pattern cancelled too (F3), an "efficiency"
+term was a fixed constant (F4), there were no recovery tests (F5), and a
+correlation helper opportunistically picked whichever of Pearson/Spearman was
+larger (F6). That foundational defect — not using the data — cannot be patched
+within a deterministic re-weighting; the fix *is* a model that conditions on the
+aggregate. The deterministic family has been removed; two honest Bayesian engines
+replace it.
+
+## The model (state-space, "Model A")
+
+Latent state in logs, with a random walk plus drift and partial pooling:
+$$
+\log \varphi_{t,k} = \log \varphi_{t-1,k} + \delta_k + \tau_k\,\eta_{t,k},
+\qquad \eta_{t,k}\sim\mathcal N(0,1),
+$$
+with $\delta_k \sim \mathcal N(\delta_\mu,\delta_\sigma)$ and
+$\log\tau_k \sim \mathcal N(\mu_{\log\tau}, \sigma_{\log\tau})$ (the drift and the
+innovation scale are pooled across sectors). The cross-section at $t=1$ is anchored
+at the aggregate level with an **estimable** dispersion $\omega_{\text{struct}}$
+(the real concentration the old Dirichlet $\gamma$ failed to be):
+$$
+\log\varphi_{1,k} = \log(\text{phi1\_center}) + \omega_{\text{struct}}\,z_k .
+$$
+The aggregate is the genuine observation:
+$$
+\mathrm{cpi}_t \sim \mathrm{Student\text{-}t}\!\left(\nu,\ \textstyle\sum_k W_{t,k}\,\varphi_{t,k},\ \sigma\right),
+$$
+(Gaussian if `student_obs = FALSE`).
+
+### Identification, honestly (rigour by layers)
+
+The **aggregate** $\sum_k W\varphi$ is *strongly* identified by the observation
+density. The **per-sector** split is only *weakly* identified: at each period one
+linear combination of the $K$ sectors is pinned by the CPI, and the remaining
+$K-1$ directions are governed by the cross-sectional prior plus temporal
+smoothness. So the per-sector intervals are honestly **wide and prior-influenced**.
+This is not a defect to hide — it is the correct uncertainty, and it is precisely
+why we feed the *full posterior draws* (not a point estimate) to the OU by
+multiple imputation: the sectoral uncertainty is propagated, not faked away.
+
+## Two engines, one trade-off
+
+* **Closed-form (conjugate) — `disaggregate_conjugate()`**. A linear-Gaussian
+  random walk in *levels* with the same aggregate observation; its exact
+  posterior is the Kalman filter + RTS smoother, with no MCMC. Joint posterior
+  draws come from the Durbin–Koopman simulation smoother. This is the correct
+  realization of the original "MCMC-free posterior" idea.
+* **MCMC — `disaggregate_statespace()`**. The richer model above (log scale ⇒
+  positivity, Student-t ⇒ robustness to aggregate outliers, hierarchical pooling),
+  which is *not* conjugate and therefore needs HMC.
+
+Both are Bayesian. Closed form buys speed and exactness at the cost of a simpler
+(Gaussian, linear) model; MCMC buys richness at the cost of sampling.
+
+## A runnable example (closed-form engine)
+
+```{r conjugate, eval = requireNamespace("BayesianDisaggregation", quietly = TRUE)}
+library(BayesianDisaggregation)
+
+sim <- simulate_disagg(T = 30, K = 4, seed = 1)   # synthetic CPI + VAB weights
+bl  <- disaggregate_conjugate(sim$cpi, sim$W, n_draws = 100, seed = 1)
+bl
+
+## the smoothed aggregate tracks the CPI tightly (aggregate is well identified)
+round(cor(bl$agg_summary[, "median"], sim$cpi), 4)
+
+## joint posterior draws: the [T, K, draws] contract consumed by the nested OU
+dim(bl$phi_draws)
+```
+
+## The MCMC engine (sketch, not evaluated here)
+
+```{r statespace, eval = FALSE}
+fit <- disaggregate_statespace(sim$cpi, sim$W, chains = 4, iter = 2000, warmup = 1000)
+fit$diagnostics                 # rhat_max, divergences
+dim(fit$phi_draws)              # T x K x draws
+str(fit$phi_summary)            # median, q2.5, q97.5 (T x K each)
+
+## couple to the nested OU (uncertainty propagated by Rubin's rule):
+## bayesianOU::fit_ou_nested_mi(phi_draws = fit$phi_draws, X = Phi_index, ...)
+```
+
+From Excel directly, reusing the bundled readers:
+
+```{r fromfiles, eval = FALSE}
+cpi_file <- system.file("extdata", "CPI.xlsx", package = "BayesianDisaggregation")
+w_file   <- system.file("extdata", "WEIGHTS.xlsx", package = "BayesianDisaggregation")
+fit <- disaggregate_from_files(cpi_file, w_file, chains = 2, iter = 1000)
+```
+
+## Data note: comparing index vs index
+
+The model is about **index levels**, so the CPI must be a level series (FRED
+units "Index source base", aggregation "Average" for annual data — never a
+rate-of-change), re-indexed to the **same base** as the production prices it will
+be compared against (e.g. 1982–1984 = 100 via the project's `convert_to_index`).
+Feeding a percent-change series here is a category error: the aggregate would not
+be on the same scale as $\sum_k W\varphi$.
+
+## Coupling to the nested OU
+
+`disaggregate_statespace()$phi_draws` (or `disaggregate_conjugate(..., n_draws =
+M)$phi_draws`) is a `[T, K, M]` array — exactly the multiple-imputation input of
+`bayesianOU::fit_ou_nested_mi()`. The OU refits once per imputation and combines
+the analyses by Rubin's rule, so the disaggregation uncertainty becomes part of
+the OU posterior.
+```

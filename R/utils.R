@@ -11,6 +11,7 @@
 #' Sets the package-wide logging verbosity.
 #'
 #' @param level Character scalar. One of "TRACE", "DEBUG", "INFO", "WARN", "ERROR".
+#' @return (Invisibly) the level set.
 #' @export
 log_enable <- function(level = "INFO") {
   if (!is.character(level) || length(level) != 1L || !level %in% names(.level_order)) {
@@ -38,29 +39,6 @@ log_msg <- function(level = "INFO", ...) {
 
 # ----- Mathematical utilities -------------------------------------------------
 
-safe_div <- function(p, q) {
-  p_safe <- pmax(p, .Machine$double.eps)
-  q_safe <- pmax(q, .Machine$double.eps)
-  p_safe / q_safe
-}
-
-kl_divergence <- function(P_row, Q_row) {
-  sum(P_row * log(safe_div(P_row, Q_row)))
-}
-
-total_variation <- function(P_row, Q_row) {
-  0.5 * sum(abs(P_row - Q_row))
-}
-
-robust_cor <- function(x, y) {
-  c_p <- suppressWarnings(cor(x, y, method = "pearson"))
-  c_s <- suppressWarnings(cor(x, y, method = "spearman"))
-  if (is.na(c_p) && is.na(c_s)) return(0)
-  if (is.na(c_p)) return(c_s)
-  if (is.na(c_s)) return(c_p)
-  if (abs(c_s) > abs(c_p)) c_s else c_p
-}
-
 #' Row-wise L1 normalization (safe)
 #' Ensures each row sums to 1; protects against NaN/Inf and near-zero sums.
 #' @keywords internal
@@ -71,6 +49,9 @@ row_norm1 <- function(X, eps = .Machine$double.eps) {
   X / rs
 }
 
+#' Parse localized numerics (thousands as ".", decimal as ",")
+#' @keywords internal
+#' @noRd
 to_num_commas <- function(x) {
   if (is.numeric(x)) return(as.numeric(x))
   x <- stringr::str_replace_all(as.character(x), "\\.", "")
@@ -78,8 +59,5 @@ to_num_commas <- function(x) {
   suppressWarnings(as.numeric(x))
 }
 
-# If NOTES about globals appear in checks, keep this; otherwise you can remove it.
-utils::globalVariables(c(
-  ".", "Year", "CPI", "Industry", "Weight_raw", "Weight",
-  "i", "composite", "value", "name", "cfg_id", "desc"
-))
+# NSE column names used by the tidyverse data readers (read_cpi / read_weights_matrix).
+utils::globalVariables(c(".", "Year", "CPI", "Industry", "Weight_raw", "Weight"))

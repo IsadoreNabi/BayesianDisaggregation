@@ -30,38 +30,25 @@
 #' }
 #'
 #' @examples
-#' \donttest{
-#' # Create a temporary Excel file with sample CPI data
-#' temp_file <- tempfile(fileext = ".xlsx")
-#' df_sample <- data.frame(
-#'   Fecha = c("2019-01-01", "2020-01-01", "2021-01-01", "2022-01-01"),
-#'   Indice = c(95.5, 100.0, 103.2, 108.7)
-#' )
-#' openxlsx::write.xlsx(df_sample, temp_file)
-#' 
-#' # Read the CPI data
-#' df <- read_cpi(temp_file)
-#' print(df)
-#' 
-#' # Verify structure
-#' stopifnot(
-#'   is.data.frame(df),
-#'   all(c("Year", "CPI") %in% names(df)),
-#'   nrow(df) == 4
-#' )
-#' 
-#' # Clean up
-#' unlink(temp_file)
+#' cpi_file <- system.file("extdata", "CPI.xlsx", package = "BayesianDisaggregation")
+#' if (nzchar(cpi_file)) {
+#'   df <- read_cpi(cpi_file)
+#'   head(df)
 #' }
 #'
-#' @seealso \code{\link{read_weights_matrix}}, \code{\link{bayesian_disaggregate}}
+#' @seealso \code{\link{read_weights_matrix}}, \code{\link{align_disagg_inputs}}
 #' @export
 read_cpi <- function(path_cpi) {
   log_msg("INFO", "Reading CPI:", path_cpi)
   df <- readxl::read_excel(path_cpi)
   cn <- tolower(names(df))
-  col_date <- which.max(stringr::str_detect(cn, "date|fecha|year|anio|ano"))
-  col_cpi  <- which.max(stringr::str_detect(cn, "cpi|indice|price"))
+  # `which` (not `which.max`): on NO match str_detect is all-FALSE and which.max
+  # silently returns index 1 (a false positive on the first column); `which`
+  # returns integer(0) so the length check below errors honestly. On AMBIGUOUS
+  # matches which.max takes only the first; `which` returns all so the length
+  # check flags the ambiguity (deuda D-7.2, saldada en Sesion 10).
+  col_date <- which(stringr::str_detect(cn, "date|fecha|year|anio|ano"))
+  col_cpi  <- which(stringr::str_detect(cn, "cpi|indice|price"))
 
   if (length(col_date) != 1 || length(col_cpi) != 1) {
     stop("Could not identify date and CPI columns in the CPI file")
@@ -120,41 +107,14 @@ read_cpi <- function(path_cpi) {
 #' }
 #'
 #' @examples
-#' \donttest{
-#' # Create a temporary Excel file with sample weights
-#' temp_file <- tempfile(fileext = ".xlsx")
-#' df_sample <- data.frame(
-#'   Sector = c("Agriculture", "Manufacturing", "Services", "Construction"),
-#'   "2019" = c(0.20, 0.35, 0.30, 0.15),
-#'   "2020" = c(0.18, 0.37, 0.32, 0.13),
-#'   "2021" = c(0.17, 0.38, 0.33, 0.12),
-#'   "2022" = c(0.16, 0.39, 0.34, 0.11),
-#'   check.names = FALSE
-#' )
-#' openxlsx::write.xlsx(df_sample, temp_file)
-#' 
-#' # Read the weights matrix
-#' w <- read_weights_matrix(temp_file)
-#' 
-#' # Inspect structure
-#' str(w)
-#' print(w$P)
-#' 
-#' # Verify properties
-#' stopifnot(
-#'   is.matrix(w$P),
-#'   nrow(w$P) == 4,  # 4 years
-#'   ncol(w$P) == 4,  # 4 sectors
-#'   all(abs(rowSums(w$P) - 1) < 1e-10),  # rows sum to 1
-#'   length(w$industries) == 4,
-#'   length(w$years) == 4
-#' )
-#' 
-#' # Clean up
-#' unlink(temp_file)
+#' w_file <- system.file("extdata", "WEIGHTS.xlsx", package = "BayesianDisaggregation")
+#' if (nzchar(w_file)) {
+#'   w <- read_weights_matrix(w_file)
+#'   stopifnot(is.matrix(w$P), all(abs(rowSums(w$P) - 1) < 1e-8))
+#'   str(w)
 #' }
 #'
-#' @seealso \code{\link{read_cpi}}, \code{\link{bayesian_disaggregate}}
+#' @seealso \code{\link{read_cpi}}, \code{\link{align_disagg_inputs}}
 #' @export
 read_weights_matrix <- function(path_weights) {
   log_msg("INFO", "Reading weights matrix:", path_weights)

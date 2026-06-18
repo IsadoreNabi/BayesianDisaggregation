@@ -39,31 +39,13 @@ If either column cannot be identified, the function errors.
 }
 }
 \examples{
-\donttest{
-# Create a temporary Excel file with sample CPI data
-temp_file <- tempfile(fileext = ".xlsx")
-df_sample <- data.frame(
-  Fecha = c("2019-01-01", "2020-01-01", "2021-01-01", "2022-01-01"),
-  Indice = c(95.5, 100.0, 103.2, 108.7)
-)
-openxlsx::write.xlsx(df_sample, temp_file)
-
-# Read the CPI data
-df <- read_cpi(temp_file)
-print(df)
-
-# Verify structure
-stopifnot(
-  is.data.frame(df),
-  all(c("Year", "CPI") \%in\% names(df)),
-  nrow(df) == 4
-)
-
-# Clean up
-unlink(temp_file)
+cpi_file <- system.file("extdata", "CPI.xlsx", package = "BayesianDisaggregation")
+if (nzchar(cpi_file)) {
+  df <- read_cpi(cpi_file)
+  head(df)
 }
 
 }
 \seealso{
-\code{\link{read_weights_matrix}}, \code{\link{bayesian_disaggregate}}
+\code{\link{read_weights_matrix}}, \code{\link{align_disagg_inputs}}
 }

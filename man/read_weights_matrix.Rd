@@ -42,41 +42,14 @@ entry becomes 0 when pivoting wide. Finally, rows are re-normalized with
 }
 }
 \examples{
-\donttest{
-# Create a temporary Excel file with sample weights
-temp_file <- tempfile(fileext = ".xlsx")
-df_sample <- data.frame(
-  Sector = c("Agriculture", "Manufacturing", "Services", "Construction"),
-  "2019" = c(0.20, 0.35, 0.30, 0.15),
-  "2020" = c(0.18, 0.37, 0.32, 0.13),
-  "2021" = c(0.17, 0.38, 0.33, 0.12),
-  "2022" = c(0.16, 0.39, 0.34, 0.11),
-  check.names = FALSE
-)
-openxlsx::write.xlsx(df_sample, temp_file)
-
-# Read the weights matrix
-w <- read_weights_matrix(temp_file)
-
-# Inspect structure
-str(w)
-print(w$P)
-
-# Verify properties
-stopifnot(
-  is.matrix(w$P),
-  nrow(w$P) == 4,  # 4 years
-  ncol(w$P) == 4,  # 4 sectors
-  all(abs(rowSums(w$P) - 1) < 1e-10),  # rows sum to 1
-  length(w$industries) == 4,
-  length(w$years) == 4
-)
-
-# Clean up
-unlink(temp_file)
+w_file <- system.file("extdata", "WEIGHTS.xlsx", package = "BayesianDisaggregation")
+if (nzchar(w_file)) {
+  w <- read_weights_matrix(w_file)
+  stopifnot(is.matrix(w$P), all(abs(rowSums(w$P) - 1) < 1e-8))
+  str(w)
 }
 
 }
 \seealso{
-\code{\link{read_cpi}}, \code{\link{bayesian_disaggregate}}
+\code{\link{read_cpi}}, \code{\link{align_disagg_inputs}}
 }
